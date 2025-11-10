@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
 import { cors } from 'hono/cors';
 import { GoogleGenAI } from "@google/genai";
-import { printToUSB, watchAndResumePrinters } from './print.ts';
+import { printToUSB, watchAndResumePrinters, getAllPrinters, printImage } from './print.ts';
 
 const app = new Hono();
 const PORT = 3000;
@@ -60,7 +60,7 @@ async function generateImage(prompt: string): Promise<Buffer | null> {
 }
 
 /**
- * API endpoint to generate and print image
+ * API endpoint to generate image (without printing)
  */
 app.post('/api/generate', async (c) => {
   const { prompt } = await c.req.json();
@@ -77,18 +77,6 @@ app.post('/api/generate', async (c) => {
       return c.json({ error: 'Failed to generate image' }, 500);
     }
 
-    // Print the image
-    try {
-      const printResult = await printToUSB(buffer, {
-        fitToPage: true,
-        copies: 1
-      });
-      console.log(`✅ Print job submitted to ${printResult.printerName}`);
-    } catch (printError) {
-      console.warn('⚠️ Printing failed:', printError);
-      // Continue even if printing fails - still return the image
-    }
-
     // Send the image back to the client
     return new Response(new Uint8Array(buffer), {
       status: 200,
@@ -99,6 +87,74 @@ app.post('/api/generate', async (c) => {
 
   } catch (error) {
     console.error('Error:', error);
+    return c.json({
+      error: error instanceof Error ? error.message : 'Unknown error'
+    }, 500);
+  }
+});
+
+/**
+ * API endpoint to get all available printers
+ */
+app.get('/api/printers', async (c) => {
+  try {
+    const printers = await getAllPrinters();
+    return c.json({
+      printers: printers.map(p => ({
+        name: p.name,
+        isDefault: p.isDefault,
+        isUSB: p.isUSB,
+        status: p.status
+      }))
+    });
+  } catch (error) {
+    console.error('⚠️ Failed to get printers:', error);
+    return c.json({
+      error: error instanceof Error ? error.message : 'Unknown error'
+    }, 500);
+  }
+});
+
+/**
+ * API endpoint to print an image
+ */
+app.post('/api/print', async (c) => {
+  try {
+    // Get printer name from header or query param
+    const printerName = c.req.header('X-Printer-Name') || c.req.query('printer');
+
+    // Get the image data from the request body
+    const blob = await c.req.blob();
+    const arrayBuffer = await blob.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    let printResult;
+
+    if (printerName) {
+      // Print to specific printer
+      const jobId = await printImage(printerName, buffer, {
+        fitToPage: true,
+        copies: 1
+      });
+      printResult = { printerName, jobId };
+    } else {
+      // Print to default USB printer
+      printResult = await printToUSB(buffer, {
+        fitToPage: true,
+        copies: 1
+      });
+    }
+
+    console.log(`✅ Print job submitted to ${printResult.printerName}`);
+
+    return c.json({
+      success: true,
+      printerName: printResult.printerName,
+      jobId: printResult.jobId
+    });
+
+  } catch (error) {
+    console.error('⚠️ Printing failed:', error);
     return c.json({
       error: error instanceof Error ? error.message : 'Unknown error'
     }, 500);

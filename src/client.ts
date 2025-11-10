@@ -18,10 +18,19 @@ const audioElement = document.querySelector("#audio") as HTMLAudioElement;
 const imageDisplay = document.querySelector(
   ".image-display"
 ) as HTMLImageElement;
+const printBtn = document.querySelector(".print-btn") as HTMLButtonElement;
+const printerSelector = document.querySelector(".printer-selector") as HTMLDivElement;
+const printerSelect = document.querySelector("#printer-select") as HTMLSelectElement;
 
 let mediaRecorder: MediaRecorder | null = null;
 let audioChunks: Blob[] = [];
 let recordingTimeout: number | null = null;
+let currentImageBlob: Blob | null = null;
+let selectedPrinter: string | null = null;
+let isProcessing: boolean = false; // Track if we're currently processing a recording
+
+// Load saved printer from localStorage
+selectedPrinter = localStorage.getItem('selectedPrinter');
 
 // Check for microphone access before showing the button
 async function checkMicrophoneAccess() {
@@ -56,6 +65,15 @@ async function resetRecorder() {
 
   mediaRecorder.onstop = async () => {
     console.log(`Media recorder stopped`);
+
+    // Prevent duplicate processing if already processing
+    if (isProcessing) {
+      console.log("Already processing, ignoring duplicate onstop event");
+      return;
+    }
+
+    isProcessing = true;
+
     // Remove recording class
     recordBtn.classList.remove("recording");
     recordBtn.classList.add("loading");
@@ -83,29 +101,124 @@ async function resetRecorder() {
       setTimeout(() => {
         recordBtn.textContent = "Sticker Dream";
       }, 1000);
+      isProcessing = false;
       resetRecorder();
       return;
     }
 
-    recordBtn.textContent = "Sending to Printer...";
-    await wait(3000);
-    recordBtn.textContent = "Printing...";
-    await wait(1500);
+    // Generate the sticker (without printing)
+    try {
+      recordBtn.textContent = "Generating...";
+      const response = await fetch("http://localhost:3000/api/generate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ prompt: text }),
+      });
 
-    // Stop loading state
-    recordBtn.classList.remove("loading");
-    recordBtn.textContent = "Printed!";
-    setTimeout(() => {
-      recordBtn.textContent = "Sticker Dream";
-    }, 1000);
-    resetRecorder();
+      if (!response.ok) {
+        throw new Error(`Server error: ${response.statusText}`);
+      }
+
+      const blob = await response.blob();
+      const imageUrl = URL.createObjectURL(blob);
+
+      // Store the image blob for printing later
+      currentImageBlob = blob;
+
+      // Display the image
+      imageDisplay.src = imageUrl;
+      imageDisplay.style.display = "block";
+
+      // Show the print button
+      printBtn.style.display = "block";
+
+      // Stop loading state
+      recordBtn.classList.remove("loading");
+      recordBtn.textContent = "Generated!";
+      setTimeout(() => {
+        recordBtn.textContent = "Sticker Dream";
+      }, 1000);
+    } catch (error) {
+      console.error("Error:", error);
+      recordBtn.classList.remove("loading");
+      recordBtn.textContent = "Error!";
+      transcriptDiv.textContent = `${text}\n\nError: ${error instanceof Error ? error.message : "Unknown error"}`;
+      setTimeout(() => {
+        recordBtn.textContent = "Sticker Dream";
+      }, 2000);
+    }
+
+    // Reset processing flag before resetting recorder
+    isProcessing = false;
+
+    // Reset recorder for next recording (but do it async to avoid blocking)
+    setTimeout(() => resetRecorder(), 100);
 
   };
 }
 
+// Load available printers
+async function loadPrinters() {
+  try {
+    const response = await fetch("http://localhost:3000/api/printers");
+    if (!response.ok) {
+      throw new Error("Failed to load printers");
+    }
+
+    const data = await response.json();
+    const printers = data.printers;
+
+    // Clear existing options
+    printerSelect.innerHTML = '';
+
+    if (printers.length === 0) {
+      printerSelect.innerHTML = '<option value="">No printers found</option>';
+      return;
+    }
+
+    // Add printer options
+    printers.forEach((printer: any) => {
+      const option = document.createElement('option');
+      option.value = printer.name;
+      option.textContent = `${printer.name}${printer.isDefault ? ' (Default)' : ''}${printer.isUSB ? ' 📌' : ''}`;
+      printerSelect.appendChild(option);
+    });
+
+    // Select saved printer or default
+    if (selectedPrinter) {
+      printerSelect.value = selectedPrinter;
+    } else {
+      // Select the default printer
+      const defaultPrinter = printers.find((p: any) => p.isDefault);
+      if (defaultPrinter) {
+        printerSelect.value = defaultPrinter.name;
+        selectedPrinter = defaultPrinter.name;
+        localStorage.setItem('selectedPrinter', selectedPrinter);
+      }
+    }
+
+    // Show the printer selector
+    printerSelector.style.display = "block";
+
+  } catch (error) {
+    console.error("Failed to load printers:", error);
+    printerSelect.innerHTML = '<option value="">Error loading printers</option>';
+  }
+}
+
+// Handle printer selection change
+printerSelect.addEventListener('change', () => {
+  selectedPrinter = printerSelect.value;
+  localStorage.setItem('selectedPrinter', selectedPrinter);
+  console.log(`Selected printer: ${selectedPrinter}`);
+});
+
 // Check microphone access on load
 checkMicrophoneAccess();
 resetRecorder();
+loadPrinters();
 
 // Start recording when button is pressed down
 recordBtn.addEventListener("pointerdown", async () => {
@@ -159,43 +272,54 @@ recordBtn.addEventListener("contextmenu", (e) => {
   e.preventDefault();
 });
 
-// Generate and print image from transcript
-async function generateAndPrint(prompt: string) {
-  if (!prompt || prompt === "Transcribing...") {
-    console.error("No valid prompt to generate");
+// Print button click handler
+printBtn.addEventListener("click", async () => {
+  if (!currentImageBlob) {
+    alert("No image to print!");
     return;
   }
 
   try {
-    transcriptDiv.textContent = `${prompt}\n\nGenerating & Printing...`;
+    printBtn.textContent = "Printing...";
+    printBtn.disabled = true;
 
-    const response = await fetch("/api/generate", {
+    const headers: Record<string, string> = {
+      "Content-Type": "image/png",
+    };
+
+    // Add selected printer to request header
+    if (selectedPrinter) {
+      headers["X-Printer-Name"] = selectedPrinter;
+    }
+
+    const response = await fetch("http://localhost:3000/api/print", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ prompt }),
+      headers,
+      body: currentImageBlob,
     });
 
     if (!response.ok) {
-      throw new Error(`Server error: ${response.statusText}`);
+      throw new Error(`Print error: ${response.statusText}`);
     }
 
-    const blob = await response.blob();
-    const imageUrl = URL.createObjectURL(blob);
+    const result = await response.json();
+    console.log("✅ Print job submitted:", result);
 
-    // Display the image
-    imageDisplay.src = imageUrl;
-    imageDisplay.style.display = "block";
-
-    transcriptDiv.textContent = prompt;
-    console.log("✅ Image generated and printed!");
+    printBtn.textContent = "Printed!";
+    setTimeout(() => {
+      printBtn.textContent = "Print Sticker";
+      printBtn.disabled = false;
+    }, 2000);
   } catch (error) {
-    console.error("Error:", error);
-    transcriptDiv.textContent = `${prompt}\n\nError: Failed to generate image`;
+    console.error("Print error:", error);
     alert(
-      "Failed to generate image: " +
+      "Failed to print: " +
         (error instanceof Error ? error.message : "Unknown error")
     );
+    printBtn.textContent = "Print Failed";
+    setTimeout(() => {
+      printBtn.textContent = "Print Sticker";
+      printBtn.disabled = false;
+    }, 2000);
   }
-}
+});

@@ -27,10 +27,17 @@
   </head>
   <body>
     <div class="container">
+      <div class="printer-selector" style="display: none">
+        <label for="printer-select">Printer:</label>
+        <select id="printer-select">
+          <option value="">Loading printers...</option>
+        </select>
+      </div>
       <button class="record" style="display: none">Sticker Dream</button>
       <audio id="audio"></audio>
       <p class="transcript">Checking microphone access...</p>
       <img class="image-display" style="display: none" />
+      <button class="print-btn" style="display: none">Print Sticker</button>
     </div>
   </body>
 </html>

@@ -3,6 +3,7 @@ node_modules
 output
 .DS_Store
 .vscode
+.pnpm-store
 .env.local
 .env.development.local
 .env.test.local
